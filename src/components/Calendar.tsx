@@ -1,5 +1,7 @@
 "use client";
 import React, { useState, useEffect } from "react";
+import { db } from "@/lib/firebaseClient";
+import { collection, onSnapshot, query, orderBy } from "firebase/firestore";
 
 const WEEK_DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -74,6 +76,21 @@ export interface Event {
   time: string;
   location: string;
   description?: string;
+  id?: string;
+  date?: string;
+}
+
+interface FirebaseEvent {
+  id: string;
+  title: string;
+  description?: string;
+  date: string;
+  startTime?: string;
+  endTime?: string;
+  location?: string;
+  category?: string;
+  createdAt?: any;
+  createdBy?: string;
 }
 
 type Events = Record<number, Event[]>;
@@ -125,20 +142,88 @@ const Calendar: React.FC = () => {
   const [isClosing, setIsClosing] = useState(false);
   const [view, setView] = useState<'month' | 'list'>('month');
   const [selectedFilters, setSelectedFilters] = useState<Set<keyof typeof EVENT_TYPES>>(new Set(Object.keys(EVENT_TYPES) as Array<keyof typeof EVENT_TYPES>));
-  const [events, setEvents] = useState<Events>(() => {
-    if (typeof window !== 'undefined') {
-      const savedEvents = localStorage.getItem(EVENTS_STORAGE_KEY);
-      return savedEvents ? JSON.parse(savedEvents) : generateRandomEvents(year, month);
-    }
-    return generateRandomEvents(year, month);
-  });
+  const [events, setEvents] = useState<Events>({});
+  const [firebaseEvents, setFirebaseEvents] = useState<FirebaseEvent[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  // Save events to localStorage whenever they change
+  // Fetch Firebase events in real-time
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(EVENTS_STORAGE_KEY, JSON.stringify(events));
+    setLoading(true);
+    try {
+      const q = query(collection(db, "events"), orderBy("date", "asc"));
+      const unsubscribe = onSnapshot(
+        q,
+        (snapshot) => {
+          const fetchedEvents: FirebaseEvent[] = [];
+          snapshot.forEach((doc) => {
+            fetchedEvents.push({
+              id: doc.id,
+              ...doc.data(),
+            } as FirebaseEvent);
+          });
+          setFirebaseEvents(fetchedEvents);
+          transformFirebaseEventsToCalendar(fetchedEvents);
+          setLoading(false);
+        },
+        (error) => {
+          console.error("Error fetching events:", error);
+          setLoading(false);
+        }
+      );
+
+      return () => unsubscribe();
+    } catch (error) {
+      console.error("Firebase subscription error:", error);
+      setLoading(false);
     }
-  }, [events]);
+  }, []);
+
+  // Transform Firebase events to calendar format
+  const transformFirebaseEventsToCalendar = (fbEvents: FirebaseEvent[]) => {
+    const transformedEvents: Events = {};
+
+    fbEvents.forEach((event) => {
+      try {
+        // Parse date (YYYY-MM-DD format)
+        const [year, month, day] = event.date.split("-").map(Number);
+        const eventDate = new Date(year, month - 1, day);
+        const dayOfMonth = eventDate.getDate();
+
+        // Determine event type from category
+        let eventType: keyof typeof EVENT_TYPES = "workshop"; // default
+        if (event.category) {
+          const categoryLower = event.category.toLowerCase();
+          if (categoryLower.includes("mentorship")) eventType = "mentorship";
+          else if (categoryLower.includes("competition")) eventType = "competition";
+          else if (categoryLower.includes("speaker")) eventType = "speaker";
+          else if (categoryLower.includes("networking")) eventType = "networking";
+          else eventType = "workshop";
+        }
+
+        // Use startTime if available, otherwise use "All Day"
+        const time = event.startTime || "All Day";
+
+        const transformedEvent: Event = {
+          id: event.id,
+          title: event.title,
+          type: eventType,
+          time: time,
+          location: event.location || "TBD",
+          description: event.description || undefined,
+          date: event.date,
+        };
+
+        if (!transformedEvents[dayOfMonth]) {
+          transformedEvents[dayOfMonth] = [];
+        }
+        transformedEvents[dayOfMonth].push(transformedEvent);
+      } catch (err) {
+        console.warn("Error transforming event:", event, err);
+      }
+    });
+
+    setEvents(transformedEvents);
+  };
 
   // Sort events by time
   const sortEvents = (events: Event[]) => {
@@ -225,6 +310,18 @@ const Calendar: React.FC = () => {
   return (
     <div className="max-w-7xl mx-auto p-4">
       <style>{animationStyles}</style>
+      
+      {/* Loading State */}
+      {loading && (
+        <div className="flex items-center justify-center py-12">
+          <div className="text-center">
+            <div className="inline-block animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-indigo-500 mb-4" aria-hidden="true"></div>
+              <p className="text-white/70">Loading events...</p>
+          </div>
+        </div>
+      )}
+
+      {!loading && (
       <div className="grid md:grid-cols-4 gap-4">
         {/* Sidebar */}
         <aside className="md:col-span-1 bg-gradient-to-br from-slate-800/90 to-slate-900/90 rounded-2xl p-4 text-white/95 shadow-xl border border-white/10 flex flex-col h-full">
@@ -475,6 +572,7 @@ const Calendar: React.FC = () => {
           )}
         </section>
       </div>
+      )}
     </div>
   );
 };
